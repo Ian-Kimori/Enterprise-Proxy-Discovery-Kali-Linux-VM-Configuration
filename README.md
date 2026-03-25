@@ -1,29 +1,30 @@
 # Enterprise Proxy Discovery & Kali Linux VM Configuration
-### Complete Sysadmin Reference Guide
 
 ---
 
-# PART 1: PROXY DISCOVERY ON WINDOWS
+# PART 1: INFORMATION GATHERING ON WINDOWS
 
 ---
 
-## 1.1 Dump All Proxy Settings at Once
+## Step 1: Dump All Proxy Settings
+
+Open CMD and run:
 
 ```cmd
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 ```
 
-Full output looks like this:
+Note down from output:
 ```
-ProxyEnable        REG_DWORD    0x1
-ProxyServer        REG_SZ       proxy2.corp.com:8080
-ProxyOverride      REG_SZ       localhost;127.*;10.*;192.168.*;<local>
-AutoConfigURL      REG_SZ       http://wpad.corp.com/proxy.pac
+ProxyEnable    → 1 means proxy is active
+ProxyServer    → proxy2.corp.com:8080
+AutoConfigURL  → http://wpad.corp.com/proxy.pac
+ProxyOverride  → localhost;127.*;10.*
 ```
 
 ---
 
-## 1.2 Check System-Level Proxy (WinHTTP — separate from user proxy)
+## Step 2: Check System-Level Proxy
 
 ```cmd
 netsh winhttp show proxy
@@ -31,14 +32,13 @@ netsh winhttp show proxy
 
 Output:
 ```
-Current WinHTTP proxy settings:
-    Proxy Server(s) :  proxy2.corp.com:8080
-    Bypass List     :  <local>
+Proxy Server: proxy2.corp.com:8080
+Bypass List:  <local>
 ```
 
 ---
 
-## 1.3 Resolve Proxy Hostname to IP
+## Step 3: Resolve Proxy Hostname to IP
 
 ```cmd
 nslookup proxy2.corp.com
@@ -50,11 +50,11 @@ Name:    proxy2.corp.com
 Address: 10.10.1.5
 ```
 
-Write down both the **hostname** and **IP** — you may need the IP if DNS doesn't work inside the VM.
+Write down both — you need the IP if DNS fails inside the VM.
 
 ---
 
-## 1.4 Get Full Network Details (DNS, Gateway, IP)
+## Step 4: Get Full Network Details
 
 ```cmd
 ipconfig /all
@@ -62,35 +62,79 @@ ipconfig /all
 
 Note down:
 ```
-IPv4 Address       : 10.10.0.25
-Subnet Mask        : 255.255.255.0
-Default Gateway    : 10.10.0.1
-DNS Servers        : 10.10.1.1
-                     10.10.1.2
+IPv4 Address    : 10.10.0.25
+Default Gateway : 10.10.0.1
+DNS Servers     : 10.10.1.1
+                  10.10.1.2
 ```
 
 ---
 
-## 1.5 Verify Proxy Port is Reachable
+## Step 5: Get Domain Information
+
+```cmd
+echo %USERDNSDOMAIN%
+```
+
+```cmd
+echo %LOGONSERVER%
+```
+
+```cmd
+echo %USERDOMAIN%
+```
+
+Output example:
+```
+USERDNSDOMAIN  → CORP.COM
+LOGONSERVER    → \\DC1
+USERDOMAIN     → CORP
+```
+
+---
+
+## Step 6: Find Domain Controller FQDN
+
+```cmd
+nslookup %LOGONSERVER:~2%
+```
+
+Or:
+
+```cmd
+nltest /dclist:corp.com
+```
+
+Output:
+```
+dc1.corp.com
+dc2.corp.com
+```
+
+Write down the primary DC — needed for Kerberos KDC config.
+
+---
+
+## Step 7: Verify Proxy Port is Reachable
 
 ```cmd
 telnet proxy2.corp.com 8080
 ```
 
-If telnet is not enabled:
+If telnet not available:
 
 ```cmd
-Test-NetConnection -ComputerName proxy2.corp.com -Port 8080
+powershell Test-NetConnection -ComputerName proxy2.corp.com -Port 8080
 ```
 
-Successful output:
+Success output:
 ```
 TcpTestSucceeded : True
 ```
 
 ---
 
-## 1.6 Read the PAC File (if AutoConfigURL exists)
+## Step 8: Read the PAC File
 
 Open in browser:
 ```
@@ -102,76 +146,74 @@ Or fetch via CMD:
 curl http://wpad.corp.com/proxy.pac
 ```
 
-Look for lines like:
+Look for:
 ```javascript
 return "PROXY proxy2.corp.com:8080";
-return "PROXY 10.10.1.5:3128";
-DIRECT  // means no proxy for that destination
+return "DIRECT";
 ```
 
-PAC file tells you:
-- All proxy addresses used
-- Which destinations bypass the proxy
-- Whether different proxies are used for different sites
+Note every proxy address listed and every bypass rule.
 
 ---
 
-## 1.7 Check if Proxy Requires Authentication
+## Step 9: Confirm Proxy Uses Kerberos
 
 ```cmd
 curl -v -x http://proxy2.corp.com:8080 http://example.com
 ```
 
-If you see:
+Look for in output:
 ```
 HTTP/1.1 407 Proxy Authentication Required
-Proxy-Authenticate: NTLM
+Proxy-Authenticate: Negotiate
+Proxy-Authenticate: Kerberos
 ```
-→ Proxy uses **Windows domain authentication (NTLM)** — needs special handling in Kali (covered in Part 3)
 
-If you see:
-```
-HTTP/1.1 200 OK
-```
-→ Proxy is **open** — no auth needed
+`Negotiate` or `Kerberos` confirms Kerberos auth.
 
 ---
 
-## 1.8 Export Corporate CA Certificate
+## Step 10: Export Corporate CA Certificate
 
 ```
-Win+R → certmgr.msc
+Win+R → certmgr.msc → Enter
 ```
 ```
 Trusted Root Certification Authorities → Certificates
 ```
 ```
-Find your company certificate (issued by corp CA, not public CA)
+Find your company root CA certificate
 Right-click → All Tasks → Export
 ```
 ```
-Format: Base-64 encoded X.509 (.CER)
-Filename: corp-ca.crt
-Save to Desktop
+Next → Base-64 encoded X.509 (.CER) → Next
+```
+```
+Save as: corp-ca.crt → Desktop
 ```
 
 ---
 
-## 1.9 Master Reference Table — Fill This In Before Touching Kali
+## Step 11: Master Reference Table
+
+Fill this in completely before moving to Kali:
 
 | Setting | Value |
 |---|---|
 | Proxy hostname | `proxy2.corp.com` |
 | Proxy IP | `10.10.1.5` |
 | Proxy port | `8080` |
-| Proxy auth required | Yes / No |
-| Auth type | NTLM / Basic / None |
+| Auth type | `Kerberos / Negotiate` |
+| Domain name | `CORP.COM` |
+| Domain short name | `CORP` |
+| Domain controller | `dc1.corp.com` |
 | DNS server 1 | `10.10.1.1` |
 | DNS server 2 | `10.10.1.2` |
 | Default gateway | `10.10.0.1` |
 | PAC file URL | `http://wpad.corp.com/proxy.pac` |
 | Bypass list | `localhost;127.*;10.*` |
-| Corp CA cert | `corp-ca.crt` |
+| Your AD username | `youruser` |
+| Corp CA cert file | `corp-ca.crt` |
 
 ---
 ---
@@ -180,16 +222,25 @@ Save to Desktop
 
 ---
 
-## 2.1 Set Network Adapter to NAT
+## Step 12: Set Network Adapter to NAT
 
 ```
-VirtualBox → Select Kali VM → Settings → Network → Adapter 1
+Open VirtualBox
+```
+```
+Select Kali VM → Click Settings
+```
+```
+Network → Adapter 1
 ```
 ```
 Attached to: NAT
 ```
 ```
-Click Advanced → Promiscuous Mode: Allow All
+Click Advanced
+```
+```
+Promiscuous Mode: Allow All
 ```
 ```
 Click OK
@@ -197,16 +248,19 @@ Click OK
 
 ---
 
-## 2.2 Configure Shared Folder (to transfer corp-ca.crt)
+## Step 13: Configure Shared Folder for Certificate Transfer
 
 ```
-VirtualBox → Settings → Shared Folders → Click + icon
+VirtualBox → Settings → Shared Folders
+```
+```
+Click the + icon on the right
 ```
 ```
 Folder Path: C:\Users\YourUser\Desktop
 Folder Name: shared
-Auto-mount: Yes
-Make Permanent: Yes
+Check: Auto-mount
+Check: Make Permanent
 ```
 ```
 Click OK → OK
@@ -214,20 +268,26 @@ Click OK → OK
 
 ---
 
-## 2.3 Boot the VM
+## Step 14: Boot Kali
 
 ```
-Click Start → Wait for Kali to fully boot
+Click Start on the Kali VM
+```
+```
+Wait for full boot to desktop
+```
+```
+Open a terminal
 ```
 
 ---
 ---
 
-# PART 3: KALI LINUX CONFIGURATION
+# PART 3: KALI LINUX — BASE NETWORK SETUP
 
 ---
 
-## 3.1 Verify Network Interface
+## Step 15: Verify Network Interface Has IP
 
 ```bash
 ip a
@@ -237,13 +297,13 @@ ip a
 ip route show
 ```
 
-Expected output:
+Expected:
 ```
 default via 10.0.2.2 dev eth0
-10.0.2.0/24 dev eth0
+10.0.2.0/24 dev eth0 proto kernel
 ```
 
-If no IP address assigned:
+If no IP:
 
 ```bash
 sudo dhclient eth0
@@ -251,7 +311,7 @@ sudo dhclient eth0
 
 ---
 
-## 3.2 Restart Network Services
+## Step 16: Restart Network Services
 
 ```bash
 sudo systemctl restart NetworkManager
@@ -263,17 +323,17 @@ sudo systemctl restart networking
 
 ---
 
-## 3.3 Test Gateway Reachability
+## Step 17: Test VirtualBox Gateway
 
 ```bash
 ping -c 3 10.0.2.2
 ```
 
-This confirms VirtualBox NAT gateway is reachable before touching proxy.
+Must succeed before going further — this confirms NAT is working.
 
 ---
 
-## 3.4 Configure DNS
+## Step 18: Configure DNS
 
 ```bash
 sudo nano /etc/resolv.conf
@@ -288,19 +348,19 @@ nameserver 8.8.8.8
 
 Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 
-Lock file from being overwritten by NetworkManager:
+Lock it from being overwritten:
 
 ```bash
 sudo chattr +i /etc/resolv.conf
 ```
 
-Verify it is locked:
+Verify lock:
 
 ```bash
 lsattr /etc/resolv.conf
 ```
 
-Output should show:
+Output:
 ```
 ----i---------e--- /etc/resolv.conf
 ```
@@ -312,14 +372,16 @@ nslookup google.com
 ```
 
 ```bash
-dig google.com
+nslookup dc1.corp.com
 ```
+
+Both must resolve before continuing.
 
 ---
 
-## 3.5 Import Corporate CA Certificate
+## Step 19: Import Corporate CA Certificate
 
-Mount shared folder:
+Mount the shared folder:
 
 ```bash
 sudo mkdir -p /mnt/shared
@@ -329,7 +391,7 @@ sudo mkdir -p /mnt/shared
 sudo mount -t vboxsf shared /mnt/shared
 ```
 
-Copy and install the cert:
+Copy and install:
 
 ```bash
 sudo cp /mnt/shared/corp-ca.crt /usr/local/share/ca-certificates/
@@ -350,21 +412,243 @@ openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-ce
 ```
 
 ---
+---
 
-## 3.6 Set System-Wide Proxy (All Users, All Tools)
+# PART 4: KERBEROS CONFIGURATION
+
+---
+
+## Step 20: Install Kerberos Packages
+
+```bash
+sudo apt update
+```
+
+```bash
+sudo apt install -y krb5-user cntlm curl libgssapi-krb5-2 ntpdate
+```
+
+During installation a blue dialog will appear asking for:
+
+```
+Default Kerberos version 5 realm:
+→ Type: CORP.COM (use your actual domain in ALL CAPS)
+```
+
+```
+Kerberos servers for your realm:
+→ Type: dc1.corp.com
+```
+
+```
+Administrative server for your Kerberos realm:
+→ Type: dc1.corp.com
+```
+
+---
+
+## Step 21: Configure Kerberos
+
+```bash
+sudo nano /etc/krb5.conf
+```
+
+Replace entire contents with:
+
+```ini
+[libdefaults]
+    default_realm = CORP.COM
+    dns_lookup_realm = false
+    dns_lookup_kdc = true
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+    forwardable = true
+    rdns = false
+
+[realms]
+    CORP.COM = {
+        kdc = dc1.corp.com
+        admin_server = dc1.corp.com
+        default_domain = corp.com
+    }
+
+[domain_realm]
+    .corp.com = CORP.COM
+    corp.com = CORP.COM
+
+[logging]
+    default = FILE:/var/log/krb5libs.log
+    kdc = FILE:/var/log/krb5kdc.log
+    admin_server = FILE:/var/log/kadmind.log
+```
+
+Save: `Ctrl+O` → `Enter` → `Ctrl+X`
+
+---
+
+## Step 22: Sync Time with Domain Controller
+
+Kerberos fails if clock is off by more than 5 minutes:
+
+```bash
+sudo ntpdate dc1.corp.com
+```
+
+Set correct timezone:
+
+```bash
+sudo timedatectl set-timezone Africa/Nairobi
+```
+
+Enable NTP sync:
+
+```bash
+sudo timedatectl set-ntp true
+```
+
+Verify time matches Windows host:
+
+```bash
+date
+```
+
+---
+
+## Step 23: Test Kerberos Connectivity to KDC
+
+```bash
+ping -c 3 dc1.corp.com
+```
+
+```bash
+nmap -p 88 dc1.corp.com
+```
+
+Port 88 must be open — that is the Kerberos port.
+
+---
+
+## Step 24: Get a Kerberos Ticket
+
+```bash
+kinit youruser@CORP.COM
+```
+
+Enter your Windows domain password when prompted.
+
+Verify ticket was issued:
+
+```bash
+klist
+```
+
+Expected output:
+```
+Ticket cache: FILE:/tmp/krb5cc_1000
+Default principal: youruser@CORP.COM
+
+Valid starting       Expires              Service principal
+03/25/2026 08:00:00  03/25/2026 18:00:00  krbtgt/CORP.COM@CORP.COM
+        renew until 04/01/2026 08:00:00
+```
+
+---
+
+## Step 25: Test Kerberos Against Proxy Directly
+
+```bash
+curl -v --proxy-negotiate -u : -x http://proxy2.corp.com:8080 https://google.com
+```
+
+If you see `HTTP/1.1 200 OK` — Kerberos auth works directly.
+
+If you see errors — proceed with Cntlm bridge in next steps.
+
+---
+---
+
+# PART 5: CNTLM CONFIGURATION (KERBEROS BRIDGE)
+
+---
+
+## Step 26: Configure Cntlm
+
+```bash
+sudo nano /etc/cntlm.conf
+```
+
+Replace contents with:
+
+```
+Username        youruser
+Domain          CORP
+Proxy           proxy2.corp.com:8080
+NoProxy         localhost, 127.0.0.1, 10.0.0.0/8, 192.168.0.0/16
+Listen          3128
+Auth            GSS
+GSSApiFlags     +DELEGATION
+```
+
+Save: `Ctrl+O` → `Enter` → `Ctrl+X`
+
+---
+
+## Step 27: Start and Enable Cntlm
+
+```bash
+sudo systemctl enable cntlm
+```
+
+```bash
+sudo systemctl start cntlm
+```
+
+Check status:
+
+```bash
+sudo systemctl status cntlm
+```
+
+Output should show:
+```
+Active: active (running)
+```
+
+---
+
+## Step 28: Test Cntlm is Working
+
+```bash
+curl -x http://localhost:3128 -I https://google.com
+```
+
+Expected:
+```
+HTTP/1.1 200 OK
+```
+
+---
+---
+
+# PART 6: CONFIGURE ALL TOOLS TO USE CNTLM
+
+---
+
+## Step 29: System-Wide Proxy
 
 ```bash
 sudo nano /etc/environment
 ```
 
 Add:
+
 ```
-http_proxy="http://proxy2.corp.com:8080"
-https_proxy="http://proxy2.corp.com:8080"
-ftp_proxy="http://proxy2.corp.com:8080"
-HTTP_PROXY="http://proxy2.corp.com:8080"
-HTTPS_PROXY="http://proxy2.corp.com:8080"
-FTP_PROXY="http://proxy2.corp.com:8080"
+http_proxy="http://localhost:3128"
+https_proxy="http://localhost:3128"
+ftp_proxy="http://localhost:3128"
+HTTP_PROXY="http://localhost:3128"
+HTTPS_PROXY="http://localhost:3128"
+FTP_PROXY="http://localhost:3128"
 no_proxy="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 NO_PROXY="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 ```
@@ -385,17 +669,18 @@ printenv | grep -i proxy
 
 ---
 
-## 3.7 Set Proxy for apt
+## Step 30: apt Proxy
 
 ```bash
 sudo nano /etc/apt/apt.conf.d/99proxy
 ```
 
 Add:
+
 ```
-Acquire::http::Proxy "http://proxy2.corp.com:8080";
-Acquire::https::Proxy "http://proxy2.corp.com:8080";
-Acquire::ftp::Proxy "http://proxy2.corp.com:8080";
+Acquire::http::Proxy "http://localhost:3128";
+Acquire::https::Proxy "http://localhost:3128";
+Acquire::ftp::Proxy "http://localhost:3128";
 ```
 
 Save: `Ctrl+O` → `Enter` → `Ctrl+X`
@@ -408,15 +693,16 @@ sudo apt update
 
 ---
 
-## 3.8 Set Proxy for curl
+## Step 31: curl Proxy
 
 ```bash
 nano ~/.curlrc
 ```
 
 Add:
+
 ```
-proxy = "http://proxy2.corp.com:8080"
+proxy = "http://localhost:3128"
 ```
 
 Save: `Ctrl+O` → `Enter` → `Ctrl+X`
@@ -424,22 +710,23 @@ Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 Test:
 
 ```bash
-curl -sv https://google.com 2>&1 | head -20
+curl -I https://google.com
 ```
 
 ---
 
-## 3.9 Set Proxy for wget
+## Step 32: wget Proxy
 
 ```bash
 nano ~/.wgetrc
 ```
 
 Add:
+
 ```
-http_proxy = http://proxy2.corp.com:8080
-https_proxy = http://proxy2.corp.com:8080
-ftp_proxy = http://proxy2.corp.com:8080
+http_proxy = http://localhost:3128
+https_proxy = http://localhost:3128
+ftp_proxy = http://localhost:3128
 use_proxy = on
 ```
 
@@ -453,14 +740,14 @@ wget -q --spider https://google.com && echo "wget OK"
 
 ---
 
-## 3.10 Set Proxy for git
+## Step 33: git Proxy
 
 ```bash
-git config --global http.proxy http://proxy2.corp.com:8080
+git config --global http.proxy http://localhost:3128
 ```
 
 ```bash
-git config --global https.proxy http://proxy2.corp.com:8080
+git config --global https.proxy http://localhost:3128
 ```
 
 ```bash
@@ -481,7 +768,7 @@ git ls-remote https://github.com/git/git HEAD
 
 ---
 
-## 3.11 Set Proxy for pip
+## Step 34: pip Proxy
 
 ```bash
 mkdir -p ~/.config/pip
@@ -492,9 +779,10 @@ nano ~/.config/pip/pip.conf
 ```
 
 Add:
+
 ```
 [global]
-proxy = http://proxy2.corp.com:8080
+proxy = http://localhost:3128
 trusted-host = pypi.org
                pypi.python.org
                files.pythonhosted.org
@@ -510,14 +798,14 @@ pip install requests --dry-run
 
 ---
 
-## 3.12 Set Proxy for snap
+## Step 35: snap Proxy
 
 ```bash
-sudo snap set system proxy.http="http://proxy2.corp.com:8080"
+sudo snap set system proxy.http="http://localhost:3128"
 ```
 
 ```bash
-sudo snap set system proxy.https="http://proxy2.corp.com:8080"
+sudo snap set system proxy.https="http://localhost:3128"
 ```
 
 Verify:
@@ -528,18 +816,19 @@ sudo snap get system proxy
 
 ---
 
-## 3.13 Set Proxy for Root User
+## Step 36: Root User Proxy
 
 ```bash
 sudo nano /root/.bashrc
 ```
 
-Add at the bottom:
+Add at bottom:
+
 ```bash
-export http_proxy="http://proxy2.corp.com:8080"
-export https_proxy="http://proxy2.corp.com:8080"
-export HTTP_PROXY="http://proxy2.corp.com:8080"
-export HTTPS_PROXY="http://proxy2.corp.com:8080"
+export http_proxy="http://localhost:3128"
+export https_proxy="http://localhost:3128"
+export HTTP_PROXY="http://localhost:3128"
+export HTTPS_PROXY="http://localhost:3128"
 export no_proxy="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 ```
@@ -558,6 +847,7 @@ Defaults env_reset
 ```
 
 Add directly below:
+
 ```
 Defaults env_keep += "http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY no_proxy NO_PROXY"
 ```
@@ -565,108 +855,113 @@ Defaults env_keep += "http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FT
 Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 
 ---
+---
 
-## 3.14 Handle NTLM Proxy Authentication (If Proxy Returned 407)
-
-If proxy requires Windows domain auth, install **Cntlm** as a local auth bridge:
-
-```bash
-sudo apt install cntlm
-```
-
-```bash
-sudo nano /etc/cntlm.conf
-```
-
-Edit these fields:
-```
-Username        yourdomainuser
-Domain          CORP
-Password        yourpassword
-Proxy           proxy2.corp.com:8080
-Listen          3128
-```
-
-Generate password hash (more secure than plaintext):
-
-```bash
-cntlm -H -u yourdomainuser -d CORP
-```
-
-Replace `Password` line in config with the generated `PassNTLMv2` hash.
-
-Start and enable Cntlm:
-
-```bash
-sudo systemctl enable cntlm
-```
-
-```bash
-sudo systemctl start cntlm
-```
-
-Now update **all proxy settings** in previous steps to point to:
-```
-http://localhost:3128
-```
-
-Instead of the corporate proxy directly.
+# PART 7: TICKET AUTO-RENEWAL
 
 ---
 
-# PART 4: FINAL VERIFICATION
-
----
-
-## 4.1 Run Full Diagnostic
+## Step 37: Create Auto-Renewal Cron Job
 
 ```bash
-echo "=== Network Interface ===" && ip a
+sudo nano /etc/cron.hourly/krb5-renew
 ```
 
-```bash
-echo "=== Routing Table ===" && ip route show
-```
+Add:
 
 ```bash
-echo "=== DNS ===" && cat /etc/resolv.conf
+#!/bin/bash
+export KRB5CCNAME=/tmp/krb5cc_$(id -u)
+kinit -R 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "Kerberos ticket renewal failed at $(date)" >> /var/log/krb5-renew.log
+fi
 ```
 
-```bash
-echo "=== Proxy Env Vars ===" && printenv | grep -i proxy
-```
+Save: `Ctrl+O` → `Enter` → `Ctrl+X`
+
+Make executable:
 
 ```bash
-echo "=== Gateway Ping ===" && ping -c 2 10.0.2.2
+sudo chmod +x /etc/cron.hourly/krb5-renew
 ```
 
-```bash
-echo "=== DNS Test ===" && nslookup google.com
-```
+Manually renew ticket anytime:
 
 ```bash
-echo "=== curl Test ===" && curl -I https://google.com
+kinit -R
 ```
 
-```bash
-echo "=== wget Test ===" && wget -q --spider https://google.com && echo "wget OK"
-```
+Check ticket status and expiry:
 
 ```bash
-echo "=== apt Test ===" && sudo apt update
-```
-
-```bash
-echo "=== git Test ===" && git ls-remote https://github.com/git/git HEAD
-```
-
-```bash
-echo "=== pip Test ===" && pip install requests --dry-run
+klist
 ```
 
 ---
+---
 
-## 4.2 One-Shot Full Diagnostic Script
+# PART 8: FINAL VERIFICATION
+
+---
+
+## Step 38: Run Full Diagnostic
+
+```bash
+ip a
+```
+
+```bash
+ip route show
+```
+
+```bash
+cat /etc/resolv.conf
+```
+
+```bash
+printenv | grep -i proxy
+```
+
+```bash
+ping -c 3 10.0.2.2
+```
+
+```bash
+ping -c 3 dc1.corp.com
+```
+
+```bash
+nslookup google.com
+```
+
+```bash
+klist
+```
+
+```bash
+curl -I https://google.com
+```
+
+```bash
+wget -q --spider https://google.com && echo "wget OK"
+```
+
+```bash
+sudo apt update
+```
+
+```bash
+git ls-remote https://github.com/git/git HEAD
+```
+
+```bash
+pip install requests --dry-run
+```
+
+---
+
+## Step 39: Save Diagnostic Script
 
 ```bash
 sudo nano /usr/local/bin/netcheck.sh
@@ -677,35 +972,60 @@ Paste:
 ```bash
 #!/bin/bash
 echo "================================================"
-echo "       NETWORK DIAGNOSTIC REPORT"
+echo "         FULL NETWORK DIAGNOSTIC REPORT"
 echo "================================================"
+
 echo ""
-echo "[1] INTERFACE & IP"
-ip a | grep -E "inet|state"
+echo "[1] NETWORK INTERFACE"
+ip a | grep -E "inet|state|eth|enp"
+
 echo ""
-echo "[2] DEFAULT ROUTE"
-ip route show default
+echo "[2] ROUTING TABLE"
+ip route show
+
 echo ""
 echo "[3] DNS SERVERS"
 cat /etc/resolv.conf | grep nameserver
+
 echo ""
-echo "[4] PROXY ENVIRONMENT"
+echo "[4] PROXY ENVIRONMENT VARIABLES"
 printenv | grep -i proxy
+
 echo ""
 echo "[5] GATEWAY REACHABILITY"
 ping -c 2 10.0.2.2 | tail -2
+
 echo ""
-echo "[6] DNS RESOLUTION"
-nslookup google.com | tail -4
+echo "[6] DOMAIN CONTROLLER REACHABILITY"
+ping -c 2 dc1.corp.com | tail -2
+
 echo ""
-echo "[7] HTTP CONNECTIVITY"
-curl -sx http://proxy2.corp.com:8080 -o /dev/null -w "HTTP Status: %{http_code}\n" https://google.com
+echo "[7] DNS RESOLUTION"
+nslookup google.com | tail -3
+
 echo ""
-echo "[8] APT PROXY CONFIG"
+echo "[8] KERBEROS TICKET STATUS"
+klist 2>/dev/null || echo "No Kerberos ticket found - run: kinit user@CORP.COM"
+
+echo ""
+echo "[9] CNTLM STATUS"
+sudo systemctl status cntlm | grep -E "Active|running|failed"
+
+echo ""
+echo "[10] HTTP CONNECTIVITY VIA CNTLM"
+curl -sx http://localhost:3128 -o /dev/null -w "HTTP Status: %{http_code}\n" https://google.com
+
+echo ""
+echo "[11] APT PROXY CONFIG"
 cat /etc/apt/apt.conf.d/99proxy
+
+echo ""
+echo "[12] CERTIFICATE STORE"
+ls /usr/local/share/ca-certificates/ | grep corp
+
 echo ""
 echo "================================================"
-echo "       END OF REPORT"
+echo "              END OF REPORT"
 echo "================================================"
 ```
 
@@ -715,11 +1035,11 @@ Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 sudo chmod +x /usr/local/bin/netcheck.sh
 ```
 
+Run anytime:
+
 ```bash
 sudo netcheck.sh
 ```
-
-Run this anytime to get a full status report instantly.
 
 ---
 
@@ -727,25 +1047,32 @@ Run this anytime to get a full status report instantly.
 
 | # | Task | Status |
 |---|---|---|
-| 1 | Proxy hostname + port discovered via reg query | ☐ |
-| 2 | Proxy IP resolved via nslookup | ☐ |
-| 3 | DNS servers noted from ipconfig /all | ☐ |
-| 4 | PAC file read and all proxies identified | ☐ |
-| 5 | Proxy auth type confirmed (407 check) | ☐ |
-| 6 | Corporate CA cert exported from certmgr.msc | ☐ |
-| 7 | VirtualBox adapter set to NAT | ☐ |
-| 8 | Shared folder configured for cert transfer | ☐ |
-| 9 | Kali has IP 10.0.2.x | ☐ |
-| 10 | DNS locked in /etc/resolv.conf | ☐ |
-| 11 | Corporate CA cert imported | ☐ |
-| 12 | /etc/environment proxy set | ☐ |
-| 13 | apt proxy configured | ☐ |
-| 14 | curl, wget, git, pip proxy configured | ☐ |
-| 15 | Root user proxy set | ☐ |
-| 16 | sudo preserves proxy env vars | ☐ |
-| 17 | Cntlm configured (if NTLM auth required) | ☐ |
-| 18 | netcheck.sh passes all checks | ☐ |
+| 1 | Proxy address + port from reg query | ☐ |
+| 2 | Proxy IP from nslookup | ☐ |
+| 3 | Kerberos auth confirmed via 407 Negotiate | ☐ |
+| 4 | Domain name + DC from echo %USERDNSDOMAIN% | ☐ |
+| 5 | DNS servers from ipconfig /all | ☐ |
+| 6 | PAC file read | ☐ |
+| 7 | Corp CA cert exported from certmgr.msc | ☐ |
+| 8 | VirtualBox adapter set to NAT | ☐ |
+| 9 | Shared folder configured | ☐ |
+| 10 | Kali has IP 10.0.2.x | ☐ |
+| 11 | Gateway ping 10.0.2.2 works | ☐ |
+| 12 | DNS locked in /etc/resolv.conf | ☐ |
+| 13 | DC reachable from Kali | ☐ |
+| 14 | Corp CA cert imported | ☐ |
+| 15 | krb5-user + cntlm installed | ☐ |
+| 16 | /etc/krb5.conf configured | ☐ |
+| 17 | Time synced with DC via ntpdate | ☐ |
+| 18 | kinit succeeds and klist shows ticket | ☐ |
+| 19 | Cntlm running on localhost:3128 | ☐ |
+| 20 | /etc/environment points to localhost:3128 | ☐ |
+| 21 | apt, curl, wget, git, pip all configured | ☐ |
+| 22 | Root user proxy set | ☐ |
+| 23 | sudo preserves proxy env vars | ☐ |
+| 24 | Kerberos ticket auto-renewal cron set | ☐ |
+| 25 | netcheck.sh passes all checks | ☐ |
 
 ---
 
-> **Every instance of `proxy2.corp.com:8080`** must be replaced with the exact values from your Part 1 discovery. The proxy hostname/IP and port you find in Step 1.3 drives every configuration that follows.
+> Replace every instance of `CORP.COM`, `dc1.corp.com`, `proxy2.corp.com:8080`, and `youruser` with the exact values collected in Part 1. Those four values drive the entire configuration.
