@@ -1,5 +1,16 @@
 # Enterprise Proxy Discovery & Kali Linux VM Configuration
 
+Good catch. The certificate steps are there but **scattered and incomplete**. Specifically:
+
+- Step 19 covers importing the cert — but it assumes the shared folder is already working
+- There is **no step verifying the cert was actually trusted** by curl, wget, git, pip individually
+- The shared folder mount is **not persistent** — it dies on reboot
+- No step shows how to **transfer the cert if shared folders fail**
+
+---
+
+# Complete End-to-End Guide Including Certificate Installation
+
 ---
 
 # PART 1: INFORMATION GATHERING ON WINDOWS
@@ -8,15 +19,13 @@
 
 ## Step 1: Dump All Proxy Settings
 
-Open CMD and run:
-
 ```cmd
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 ```
 
-Note down from output:
+Note down:
 ```
-ProxyEnable    → 1 means proxy is active
+ProxyEnable    → 1
 ProxyServer    → proxy2.corp.com:8080
 AutoConfigURL  → http://wpad.corp.com/proxy.pac
 ProxyOverride  → localhost;127.*;10.*
@@ -30,7 +39,7 @@ ProxyOverride  → localhost;127.*;10.*
 netsh winhttp show proxy
 ```
 
-Output:
+Note down:
 ```
 Proxy Server: proxy2.corp.com:8080
 Bypass List:  <local>
@@ -44,13 +53,11 @@ Bypass List:  <local>
 nslookup proxy2.corp.com
 ```
 
-Output:
+Note down both hostname and IP:
 ```
 Name:    proxy2.corp.com
 Address: 10.10.1.5
 ```
-
-Write down both — you need the IP if DNS fails inside the VM.
 
 ---
 
@@ -84,11 +91,11 @@ echo %LOGONSERVER%
 echo %USERDOMAIN%
 ```
 
-Output example:
+Note down:
 ```
-USERDNSDOMAIN  → CORP.COM
-LOGONSERVER    → \\DC1
-USERDOMAIN     → CORP
+USERDNSDOMAIN → CORP.COM
+LOGONSERVER   → \\DC1
+USERDOMAIN    → CORP
 ```
 
 ---
@@ -96,38 +103,23 @@ USERDOMAIN     → CORP
 ## Step 6: Find Domain Controller FQDN
 
 ```cmd
-nslookup %LOGONSERVER:~2%
-```
-
-Or:
-
-```cmd
 nltest /dclist:corp.com
 ```
 
-Output:
+Note down primary DC:
 ```
 dc1.corp.com
-dc2.corp.com
 ```
-
-Write down the primary DC — needed for Kerberos KDC config.
 
 ---
 
 ## Step 7: Verify Proxy Port is Reachable
 
 ```cmd
-telnet proxy2.corp.com 8080
-```
-
-If telnet not available:
-
-```cmd
 powershell Test-NetConnection -ComputerName proxy2.corp.com -Port 8080
 ```
 
-Success output:
+Must show:
 ```
 TcpTestSucceeded : True
 ```
@@ -141,18 +133,7 @@ Open in browser:
 http://wpad.corp.com/proxy.pac
 ```
 
-Or fetch via CMD:
-```cmd
-curl http://wpad.corp.com/proxy.pac
-```
-
-Look for:
-```javascript
-return "PROXY proxy2.corp.com:8080";
-return "DIRECT";
-```
-
-Note every proxy address listed and every bypass rule.
+Note every proxy address and bypass rule inside it.
 
 ---
 
@@ -162,14 +143,11 @@ Note every proxy address listed and every bypass rule.
 curl -v -x http://proxy2.corp.com:8080 http://example.com
 ```
 
-Look for in output:
+Look for:
 ```
 HTTP/1.1 407 Proxy Authentication Required
 Proxy-Authenticate: Negotiate
-Proxy-Authenticate: Kerberos
 ```
-
-`Negotiate` or `Kerberos` confirms Kerberos auth.
 
 ---
 
@@ -182,23 +160,30 @@ Win+R → certmgr.msc → Enter
 Trusted Root Certification Authorities → Certificates
 ```
 ```
-Find your company root CA certificate
-Right-click → All Tasks → Export
+Find your company root CA → Right-click → All Tasks → Export
 ```
 ```
 Next → Base-64 encoded X.509 (.CER) → Next
 ```
 ```
-Save as: corp-ca.crt → Desktop
+Filename: corp-ca.crt → Save to Desktop
 ```
 
 ---
 
-## Step 11: Master Reference Table
+## Step 11: Also Export as DER Format (Needed for Java tools)
 
-Fill this in completely before moving to Kali:
+Repeat Step 10 but choose:
+```
+DER encoded binary X.509 (.CER)
+Filename: corp-ca.der → Save to Desktop
+```
 
-| Setting | Value |
+---
+
+## Step 12: Master Reference Table
+
+| Setting | Your Value |
 |---|---|
 | Proxy hostname | `proxy2.corp.com` |
 | Proxy IP | `10.10.1.5` |
@@ -210,10 +195,9 @@ Fill this in completely before moving to Kali:
 | DNS server 1 | `10.10.1.1` |
 | DNS server 2 | `10.10.1.2` |
 | Default gateway | `10.10.0.1` |
-| PAC file URL | `http://wpad.corp.com/proxy.pac` |
-| Bypass list | `localhost;127.*;10.*` |
 | Your AD username | `youruser` |
-| Corp CA cert file | `corp-ca.crt` |
+| Corp CA cert (Base64) | `corp-ca.crt` |
+| Corp CA cert (DER) | `corp-ca.der` |
 
 ---
 ---
@@ -222,13 +206,10 @@ Fill this in completely before moving to Kali:
 
 ---
 
-## Step 12: Set Network Adapter to NAT
+## Step 13: Set Network Adapter to NAT
 
 ```
-Open VirtualBox
-```
-```
-Select Kali VM → Click Settings
+VirtualBox → Select Kali VM → Settings
 ```
 ```
 Network → Adapter 1
@@ -237,10 +218,7 @@ Network → Adapter 1
 Attached to: NAT
 ```
 ```
-Click Advanced
-```
-```
-Promiscuous Mode: Allow All
+Advanced → Promiscuous Mode: Allow All
 ```
 ```
 Click OK
@@ -248,13 +226,10 @@ Click OK
 
 ---
 
-## Step 13: Configure Shared Folder for Certificate Transfer
+## Step 14: Configure Shared Folder
 
 ```
-VirtualBox → Settings → Shared Folders
-```
-```
-Click the + icon on the right
+VirtualBox → Settings → Shared Folders → Click +
 ```
 ```
 Folder Path: C:\Users\YourUser\Desktop
@@ -268,26 +243,20 @@ Click OK → OK
 
 ---
 
-## Step 14: Boot Kali
+## Step 15: Boot Kali
 
 ```
-Click Start on the Kali VM
-```
-```
-Wait for full boot to desktop
-```
-```
-Open a terminal
+Click Start → Wait for full boot → Open terminal
 ```
 
 ---
 ---
 
-# PART 3: KALI LINUX — BASE NETWORK SETUP
+# PART 3: BASE NETWORK SETUP
 
 ---
 
-## Step 15: Verify Network Interface Has IP
+## Step 16: Verify Network Interface
 
 ```bash
 ip a
@@ -295,12 +264,6 @@ ip a
 
 ```bash
 ip route show
-```
-
-Expected:
-```
-default via 10.0.2.2 dev eth0
-10.0.2.0/24 dev eth0 proto kernel
 ```
 
 If no IP:
@@ -311,7 +274,7 @@ sudo dhclient eth0
 
 ---
 
-## Step 16: Restart Network Services
+## Step 17: Restart Network Services
 
 ```bash
 sudo systemctl restart NetworkManager
@@ -323,17 +286,17 @@ sudo systemctl restart networking
 
 ---
 
-## Step 17: Test VirtualBox Gateway
+## Step 18: Test Gateway
 
 ```bash
 ping -c 3 10.0.2.2
 ```
 
-Must succeed before going further — this confirms NAT is working.
+Must succeed before continuing.
 
 ---
 
-## Step 18: Configure DNS
+## Step 19: Configure DNS
 
 ```bash
 sudo nano /etc/resolv.conf
@@ -348,7 +311,7 @@ nameserver 8.8.8.8
 
 Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 
-Lock it from being overwritten:
+Lock from being overwritten:
 
 ```bash
 sudo chattr +i /etc/resolv.conf
@@ -360,12 +323,7 @@ Verify lock:
 lsattr /etc/resolv.conf
 ```
 
-Output:
-```
-----i---------e--- /etc/resolv.conf
-```
-
-Test DNS:
+Test:
 
 ```bash
 nslookup google.com
@@ -375,13 +333,16 @@ nslookup google.com
 nslookup dc1.corp.com
 ```
 
-Both must resolve before continuing.
+---
+---
+
+# PART 4: CERTIFICATE INSTALLATION (COMPLETE)
+
+This is the most critical part — every tool that uses HTTPS will fail without this.
 
 ---
 
-## Step 19: Import Corporate CA Certificate
-
-Mount the shared folder:
+## Step 20: Mount the Shared Folder
 
 ```bash
 sudo mkdir -p /mnt/shared
@@ -391,34 +352,268 @@ sudo mkdir -p /mnt/shared
 sudo mount -t vboxsf shared /mnt/shared
 ```
 
-Copy and install:
+Verify the cert is visible:
 
 ```bash
-sudo cp /mnt/shared/corp-ca.crt /usr/local/share/ca-certificates/
+ls /mnt/shared/
 ```
+
+You should see `corp-ca.crt` and `corp-ca.der` listed.
+
+---
+
+## Step 21: Make the Mount Persistent Across Reboots
+
+```bash
+sudo nano /etc/fstab
+```
+
+Add at the bottom:
+
+```
+shared  /mnt/shared  vboxsf  defaults,uid=1000,gid=1000,umask=0022  0  0
+```
+
+Save: `Ctrl+O` → `Enter` → `Ctrl+X`
+
+---
+
+## Step 22: Copy Certificates to Correct Locations
+
+```bash
+sudo cp /mnt/shared/corp-ca.crt /usr/local/share/ca-certificates/corp-ca.crt
+```
+
+```bash
+sudo cp /mnt/shared/corp-ca.crt /etc/ssl/certs/corp-ca.crt
+```
+
+```bash
+sudo cp /mnt/shared/corp-ca.der /etc/ssl/certs/corp-ca.der
+```
+
+---
+
+## Step 23: Install Certificate into System Trust Store
 
 ```bash
 sudo update-ca-certificates
 ```
 
-Verify:
+Expected output:
+```
+Updating certificates in /etc/ssl/certs...
+1 added, 0 removed; done.
+```
+
+Verify it was added:
 
 ```bash
 ls /usr/local/share/ca-certificates/ | grep corp
 ```
 
 ```bash
+ls /etc/ssl/certs/ | grep corp
+```
+
+---
+
+## Step 24: Verify Certificate is Valid
+
+```bash
+openssl x509 -in /usr/local/share/ca-certificates/corp-ca.crt -text -noout | grep -E "Issuer|Subject|Not Before|Not After"
+```
+
+```bash
 openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/corp-ca.crt
+```
+
+Expected:
+```
+corp-ca.crt: OK
+```
+
+---
+
+## Step 25: Install Certificate for curl
+
+curl uses the system store automatically after `update-ca-certificates` but verify:
+
+```bash
+curl --cacert /etc/ssl/certs/ca-certificates.crt -I https://proxy2.corp.com
+```
+
+```bash
+curl -I https://google.com
+```
+
+No SSL errors = cert is working for curl.
+
+---
+
+## Step 26: Install Certificate for wget
+
+wget also uses system store — verify:
+
+```bash
+wget -q --spider https://google.com && echo "wget cert OK"
+```
+
+If still failing force the cert:
+
+```bash
+echo "ca_certificate=/etc/ssl/certs/ca-certificates.crt" >> ~/.wgetrc
+```
+
+---
+
+## Step 27: Install Certificate for git
+
+```bash
+git config --global http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
+```
+
+Verify:
+
+```bash
+git config --global --list | grep ssl
+```
+
+---
+
+## Step 28: Install Certificate for pip
+
+```bash
+nano ~/.config/pip/pip.conf
+```
+
+Add under `[global]`:
+
+```
+cert = /etc/ssl/certs/ca-certificates.crt
+```
+
+Full file should look like:
+```
+[global]
+proxy = http://localhost:3128
+cert = /etc/ssl/certs/ca-certificates.crt
+trusted-host = pypi.org
+               pypi.python.org
+               files.pythonhosted.org
+```
+
+Save: `Ctrl+O` → `Enter` → `Ctrl+X`
+
+---
+
+## Step 29: Install Certificate for Java (Burp, ZAP, etc.)
+
+```bash
+sudo keytool -import -trustcacerts \
+  -alias corp-ca \
+  -file /mnt/shared/corp-ca.der \
+  -keystore /etc/ssl/certs/java/cacerts \
+  -storepass changeit \
+  -noprompt
+```
+
+Verify Java trust store:
+
+```bash
+sudo keytool -list -keystore /etc/ssl/certs/java/cacerts \
+  -storepass changeit | grep corp-ca
+```
+
+---
+
+## Step 30: Install Certificate for Firefox (if used)
+
+```bash
+sudo apt install libnss3-tools
+```
+
+```bash
+certutil -A -n "Corp CA" \
+  -t "CT,," \
+  -i /mnt/shared/corp-ca.crt \
+  -d ~/.mozilla/firefox/*.default-esr
+```
+
+Verify:
+
+```bash
+certutil -L -d ~/.mozilla/firefox/*.default-esr | grep Corp
+```
+
+---
+
+## Step 31: Install Certificate for Chromium (if used)
+
+```bash
+mkdir -p ~/.pki/nssdb
+```
+
+```bash
+certutil -d ~/.pki/nssdb -N --empty-password
+```
+
+```bash
+certutil -d ~/.pki/nssdb -A \
+  -n "Corp CA" \
+  -t "CT,," \
+  -i /mnt/shared/corp-ca.crt
+```
+
+Verify:
+
+```bash
+certutil -d ~/.pki/nssdb -L | grep Corp
+```
+
+---
+
+## Step 32: Fallback — Transfer Cert Without Shared Folder
+
+If shared folder mount fails use one of these alternatives:
+
+**Option A — Python HTTP server on Windows:**
+
+On Windows CMD in Desktop folder:
+```cmd
+python -m http.server 8000
+```
+
+On Kali:
+```bash
+wget http://10.10.0.25:8000/corp-ca.crt
+wget http://10.10.0.25:8000/corp-ca.der
+```
+
+**Option B — Base64 paste directly into Kali terminal:**
+
+On Windows CMD:
+```cmd
+certutil -encode corp-ca.crt corp-ca-b64.txt
+```
+
+Open `corp-ca-b64.txt` → copy contents → paste into Kali:
+```bash
+nano /tmp/corp-ca.crt
+# paste contents
+# Ctrl+O → Enter → Ctrl+X
+sudo cp /tmp/corp-ca.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
 ```
 
 ---
 ---
 
-# PART 4: KERBEROS CONFIGURATION
+# PART 5: KERBEROS CONFIGURATION
 
 ---
 
-## Step 20: Install Kerberos Packages
+## Step 33: Install Kerberos Packages
 
 ```bash
 sudo apt update
@@ -428,32 +623,22 @@ sudo apt update
 sudo apt install -y krb5-user cntlm curl libgssapi-krb5-2 ntpdate
 ```
 
-During installation a blue dialog will appear asking for:
-
+When prompted:
 ```
-Default Kerberos version 5 realm:
-→ Type: CORP.COM (use your actual domain in ALL CAPS)
-```
-
-```
-Kerberos servers for your realm:
-→ Type: dc1.corp.com
-```
-
-```
-Administrative server for your Kerberos realm:
-→ Type: dc1.corp.com
+Default realm:        CORP.COM
+KDC server:           dc1.corp.com
+Admin server:         dc1.corp.com
 ```
 
 ---
 
-## Step 21: Configure Kerberos
+## Step 34: Configure Kerberos
 
 ```bash
 sudo nano /etc/krb5.conf
 ```
 
-Replace entire contents with:
+Replace entire contents:
 
 ```ini
 [libdefaults]
@@ -486,27 +671,19 @@ Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 
 ---
 
-## Step 22: Sync Time with Domain Controller
-
-Kerberos fails if clock is off by more than 5 minutes:
+## Step 35: Sync Time with Domain Controller
 
 ```bash
 sudo ntpdate dc1.corp.com
 ```
 
-Set correct timezone:
-
 ```bash
 sudo timedatectl set-timezone Africa/Nairobi
 ```
 
-Enable NTP sync:
-
 ```bash
 sudo timedatectl set-ntp true
 ```
-
-Verify time matches Windows host:
 
 ```bash
 date
@@ -514,7 +691,7 @@ date
 
 ---
 
-## Step 23: Test Kerberos Connectivity to KDC
+## Step 36: Verify KDC is Reachable
 
 ```bash
 ping -c 3 dc1.corp.com
@@ -524,60 +701,44 @@ ping -c 3 dc1.corp.com
 nmap -p 88 dc1.corp.com
 ```
 
-Port 88 must be open — that is the Kerberos port.
+Port 88 must show open.
 
 ---
 
-## Step 24: Get a Kerberos Ticket
+## Step 37: Get Kerberos Ticket
 
 ```bash
 kinit youruser@CORP.COM
 ```
 
-Enter your Windows domain password when prompted.
-
-Verify ticket was issued:
+Verify:
 
 ```bash
 klist
 ```
 
-Expected output:
-```
-Ticket cache: FILE:/tmp/krb5cc_1000
-Default principal: youruser@CORP.COM
-
-Valid starting       Expires              Service principal
-03/25/2026 08:00:00  03/25/2026 18:00:00  krbtgt/CORP.COM@CORP.COM
-        renew until 04/01/2026 08:00:00
-```
-
 ---
 
-## Step 25: Test Kerberos Against Proxy Directly
+## Step 38: Test Kerberos Against Proxy
 
 ```bash
 curl -v --proxy-negotiate -u : -x http://proxy2.corp.com:8080 https://google.com
 ```
 
-If you see `HTTP/1.1 200 OK` — Kerberos auth works directly.
-
-If you see errors — proceed with Cntlm bridge in next steps.
+`HTTP/1.1 200 OK` = Kerberos working directly.
 
 ---
 ---
 
-# PART 5: CNTLM CONFIGURATION (KERBEROS BRIDGE)
+# PART 6: CNTLM BRIDGE CONFIGURATION
 
 ---
 
-## Step 26: Configure Cntlm
+## Step 39: Configure Cntlm
 
 ```bash
 sudo nano /etc/cntlm.conf
 ```
-
-Replace contents with:
 
 ```
 Username        youruser
@@ -593,7 +754,7 @@ Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 
 ---
 
-## Step 27: Start and Enable Cntlm
+## Step 40: Start Cntlm
 
 ```bash
 sudo systemctl enable cntlm
@@ -603,44 +764,28 @@ sudo systemctl enable cntlm
 sudo systemctl start cntlm
 ```
 
-Check status:
-
 ```bash
 sudo systemctl status cntlm
 ```
 
-Output should show:
-```
-Active: active (running)
-```
-
----
-
-## Step 28: Test Cntlm is Working
+Test:
 
 ```bash
 curl -x http://localhost:3128 -I https://google.com
 ```
 
-Expected:
-```
-HTTP/1.1 200 OK
-```
-
 ---
 ---
 
-# PART 6: CONFIGURE ALL TOOLS TO USE CNTLM
+# PART 7: CONFIGURE ALL TOOLS
 
 ---
 
-## Step 29: System-Wide Proxy
+## Step 41: System-Wide Proxy
 
 ```bash
 sudo nano /etc/environment
 ```
-
-Add:
 
 ```
 http_proxy="http://localhost:3128"
@@ -653,15 +798,9 @@ no_proxy="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 NO_PROXY="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 ```
 
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
-Reload:
-
 ```bash
 source /etc/environment
 ```
-
-Verify:
 
 ```bash
 printenv | grep -i proxy
@@ -669,13 +808,11 @@ printenv | grep -i proxy
 
 ---
 
-## Step 30: apt Proxy
+## Step 42: apt
 
 ```bash
 sudo nano /etc/apt/apt.conf.d/99proxy
 ```
-
-Add:
 
 ```
 Acquire::http::Proxy "http://localhost:3128";
@@ -683,31 +820,22 @@ Acquire::https::Proxy "http://localhost:3128";
 Acquire::ftp::Proxy "http://localhost:3128";
 ```
 
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
-Test:
-
 ```bash
 sudo apt update
 ```
 
 ---
 
-## Step 31: curl Proxy
+## Step 43: curl
 
 ```bash
 nano ~/.curlrc
 ```
 
-Add:
-
 ```
 proxy = "http://localhost:3128"
+cacert = /etc/ssl/certs/ca-certificates.crt
 ```
-
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
-Test:
 
 ```bash
 curl -I https://google.com
@@ -715,24 +843,18 @@ curl -I https://google.com
 
 ---
 
-## Step 32: wget Proxy
+## Step 44: wget
 
 ```bash
 nano ~/.wgetrc
 ```
 
-Add:
-
 ```
 http_proxy = http://localhost:3128
 https_proxy = http://localhost:3128
-ftp_proxy = http://localhost:3128
 use_proxy = on
+ca_certificate = /etc/ssl/certs/ca-certificates.crt
 ```
-
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
-Test:
 
 ```bash
 wget -q --spider https://google.com && echo "wget OK"
@@ -740,7 +862,7 @@ wget -q --spider https://google.com && echo "wget OK"
 
 ---
 
-## Step 33: git Proxy
+## Step 45: git
 
 ```bash
 git config --global http.proxy http://localhost:3128
@@ -751,16 +873,8 @@ git config --global https.proxy http://localhost:3128
 ```
 
 ```bash
-git config --global http.sslVerify true
+git config --global http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
 ```
-
-Verify:
-
-```bash
-git config --global --list | grep proxy
-```
-
-Test:
 
 ```bash
 git ls-remote https://github.com/git/git HEAD
@@ -768,7 +882,7 @@ git ls-remote https://github.com/git/git HEAD
 
 ---
 
-## Step 34: pip Proxy
+## Step 46: pip
 
 ```bash
 mkdir -p ~/.config/pip
@@ -778,19 +892,14 @@ mkdir -p ~/.config/pip
 nano ~/.config/pip/pip.conf
 ```
 
-Add:
-
 ```
 [global]
 proxy = http://localhost:3128
+cert = /etc/ssl/certs/ca-certificates.crt
 trusted-host = pypi.org
                pypi.python.org
                files.pythonhosted.org
 ```
-
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
-Test:
 
 ```bash
 pip install requests --dry-run
@@ -798,7 +907,7 @@ pip install requests --dry-run
 
 ---
 
-## Step 35: snap Proxy
+## Step 47: snap
 
 ```bash
 sudo snap set system proxy.http="http://localhost:3128"
@@ -808,21 +917,17 @@ sudo snap set system proxy.http="http://localhost:3128"
 sudo snap set system proxy.https="http://localhost:3128"
 ```
 
-Verify:
-
 ```bash
 sudo snap get system proxy
 ```
 
 ---
 
-## Step 36: Root User Proxy
+## Step 48: Root User
 
 ```bash
 sudo nano /root/.bashrc
 ```
-
-Add at bottom:
 
 ```bash
 export http_proxy="http://localhost:3128"
@@ -833,66 +938,47 @@ export no_proxy="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16"
 ```
 
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
-Preserve proxy vars when using sudo:
-
 ```bash
 sudo visudo
 ```
 
-Find:
-```
-Defaults env_reset
-```
-
-Add directly below:
+Find `Defaults env_reset` and add below:
 
 ```
 Defaults env_keep += "http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY no_proxy NO_PROXY"
 ```
 
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
 ---
 ---
 
-# PART 7: TICKET AUTO-RENEWAL
+# PART 8: TICKET AUTO-RENEWAL
 
 ---
 
-## Step 37: Create Auto-Renewal Cron Job
+## Step 49: Create Renewal Cron Job
 
 ```bash
 sudo nano /etc/cron.hourly/krb5-renew
 ```
-
-Add:
 
 ```bash
 #!/bin/bash
 export KRB5CCNAME=/tmp/krb5cc_$(id -u)
 kinit -R 2>/dev/null
 if [ $? -ne 0 ]; then
-    echo "Kerberos ticket renewal failed at $(date)" >> /var/log/krb5-renew.log
+    echo "Ticket renewal failed at $(date)" >> /var/log/krb5-renew.log
 fi
 ```
-
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
-Make executable:
 
 ```bash
 sudo chmod +x /etc/cron.hourly/krb5-renew
 ```
 
-Manually renew ticket anytime:
+Manual renewal anytime:
 
 ```bash
 kinit -R
 ```
-
-Check ticket status and expiry:
 
 ```bash
 klist
@@ -901,11 +987,11 @@ klist
 ---
 ---
 
-# PART 8: FINAL VERIFICATION
+# PART 9: FINAL VERIFICATION
 
 ---
 
-## Step 38: Run Full Diagnostic
+## Step 50: Full Diagnostic
 
 ```bash
 ip a
@@ -940,6 +1026,10 @@ klist
 ```
 
 ```bash
+openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/corp-ca.crt
+```
+
+```bash
 curl -I https://google.com
 ```
 
@@ -961,13 +1051,11 @@ pip install requests --dry-run
 
 ---
 
-## Step 39: Save Diagnostic Script
+## Step 51: Save Diagnostic Script
 
 ```bash
 sudo nano /usr/local/bin/netcheck.sh
 ```
-
-Paste:
 
 ```bash
 #!/bin/bash
@@ -1004,23 +1092,27 @@ echo "[7] DNS RESOLUTION"
 nslookup google.com | tail -3
 
 echo ""
-echo "[8] KERBEROS TICKET STATUS"
-klist 2>/dev/null || echo "No Kerberos ticket found - run: kinit user@CORP.COM"
+echo "[8] KERBEROS TICKET"
+klist 2>/dev/null || echo "No ticket - run: kinit user@CORP.COM"
 
 echo ""
-echo "[9] CNTLM STATUS"
+echo "[9] CERTIFICATE VERIFICATION"
+openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/corp-ca.crt
+
+echo ""
+echo "[10] CNTLM STATUS"
 sudo systemctl status cntlm | grep -E "Active|running|failed"
 
 echo ""
-echo "[10] HTTP CONNECTIVITY VIA CNTLM"
+echo "[11] CURL TEST"
 curl -sx http://localhost:3128 -o /dev/null -w "HTTP Status: %{http_code}\n" https://google.com
 
 echo ""
-echo "[11] APT PROXY CONFIG"
+echo "[12] APT PROXY CONFIG"
 cat /etc/apt/apt.conf.d/99proxy
 
 echo ""
-echo "[12] CERTIFICATE STORE"
+echo "[13] CERTIFICATE STORE"
 ls /usr/local/share/ca-certificates/ | grep corp
 
 echo ""
@@ -1029,13 +1121,9 @@ echo "              END OF REPORT"
 echo "================================================"
 ```
 
-Save: `Ctrl+O` → `Enter` → `Ctrl+X`
-
 ```bash
 sudo chmod +x /usr/local/bin/netcheck.sh
 ```
-
-Run anytime:
 
 ```bash
 sudo netcheck.sh
@@ -1050,29 +1138,38 @@ sudo netcheck.sh
 | 1 | Proxy address + port from reg query | ☐ |
 | 2 | Proxy IP from nslookup | ☐ |
 | 3 | Kerberos auth confirmed via 407 Negotiate | ☐ |
-| 4 | Domain name + DC from echo %USERDNSDOMAIN% | ☐ |
+| 4 | Domain + DC from echo %USERDNSDOMAIN% | ☐ |
 | 5 | DNS servers from ipconfig /all | ☐ |
-| 6 | PAC file read | ☐ |
-| 7 | Corp CA cert exported from certmgr.msc | ☐ |
-| 8 | VirtualBox adapter set to NAT | ☐ |
-| 9 | Shared folder configured | ☐ |
-| 10 | Kali has IP 10.0.2.x | ☐ |
-| 11 | Gateway ping 10.0.2.2 works | ☐ |
-| 12 | DNS locked in /etc/resolv.conf | ☐ |
-| 13 | DC reachable from Kali | ☐ |
-| 14 | Corp CA cert imported | ☐ |
-| 15 | krb5-user + cntlm installed | ☐ |
-| 16 | /etc/krb5.conf configured | ☐ |
-| 17 | Time synced with DC via ntpdate | ☐ |
-| 18 | kinit succeeds and klist shows ticket | ☐ |
-| 19 | Cntlm running on localhost:3128 | ☐ |
-| 20 | /etc/environment points to localhost:3128 | ☐ |
-| 21 | apt, curl, wget, git, pip all configured | ☐ |
-| 22 | Root user proxy set | ☐ |
-| 23 | sudo preserves proxy env vars | ☐ |
-| 24 | Kerberos ticket auto-renewal cron set | ☐ |
-| 25 | netcheck.sh passes all checks | ☐ |
+| 6 | Corp CA cert exported as .crt AND .der | ☐ |
+| 7 | VirtualBox adapter set to NAT | ☐ |
+| 8 | Shared folder configured and persistent in fstab | ☐ |
+| 9 | Kali has IP 10.0.2.x | ☐ |
+| 10 | Gateway ping 10.0.2.2 works | ☐ |
+| 11 | DNS locked in /etc/resolv.conf | ☐ |
+| 12 | DC reachable from Kali | ☐ |
+| 13 | Corp CA cert copied to /usr/local/share/ca-certificates/ | ☐ |
+| 14 | Corp CA cert copied to /etc/ssl/certs/ | ☐ |
+| 15 | update-ca-certificates ran successfully | ☐ |
+| 16 | openssl verify returns OK | ☐ |
+| 17 | Cert installed for curl | ☐ |
+| 18 | Cert installed for wget | ☐ |
+| 19 | Cert installed for git | ☐ |
+| 20 | Cert installed for pip | ☐ |
+| 21 | Cert installed for Java (keytool) | ☐ |
+| 22 | Cert installed for Firefox | ☐ |
+| 23 | Cert installed for Chromium | ☐ |
+| 24 | krb5-user + cntlm installed | ☐ |
+| 25 | /etc/krb5.conf configured | ☐ |
+| 26 | Time synced with DC | ☐ |
+| 27 | kinit succeeds and klist shows ticket | ☐ |
+| 28 | Cntlm running on localhost:3128 | ☐ |
+| 29 | /etc/environment points to localhost:3128 | ☐ |
+| 30 | apt, curl, wget, git, pip all configured | ☐ |
+| 31 | Root user proxy set | ☐ |
+| 32 | sudo preserves proxy env vars | ☐ |
+| 33 | Kerberos ticket auto-renewal cron set | ☐ |
+| 34 | netcheck.sh passes all checks | ☐ |
 
 ---
 
-> Replace every instance of `CORP.COM`, `dc1.corp.com`, `proxy2.corp.com:8080`, and `youruser` with the exact values collected in Part 1. Those four values drive the entire configuration.
+> The two things missing from the GitHub version were: **per-tool cert pinning** (Steps 25–31) and **persistent shared folder mount via fstab** (Step 21). Without those, tools like git, pip, and Java-based tools silently fail on SSL even after `update-ca-certificates` runs.
