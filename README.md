@@ -484,6 +484,9 @@ git config --global --list | grep ssl
 ## Step 28: Install Certificate for pip
 
 ```bash
+mkdir -p ~/.config/pip
+```
+```bash
 nano ~/.config/pip/pip.conf
 ```
 
